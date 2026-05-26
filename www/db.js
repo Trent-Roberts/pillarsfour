@@ -47,16 +47,28 @@ export async function getConfig(){
 export async function setConfig(cfg){
   cfg.lastUpdated = new Date().toISOString();
   if(!cfg.defaultView) cfg.defaultView = "month";
+  if(typeof cfg.discordWebhookUrl !== "string") cfg.discordWebhookUrl = "";
+  if(typeof cfg.autoPostDiscord !== "boolean") cfg.autoPostDiscord = false;
   await setMeta("config", cfg);
 }
 
 export async function ensureConfig(){
   let cfg = await getConfig();
   if(cfg){
+    let changed = false;
     if(!cfg.defaultView){
       cfg.defaultView = "month";
-      await setConfig(cfg);
+      changed = true;
     }
+    if(typeof cfg.discordWebhookUrl !== "string"){
+      cfg.discordWebhookUrl = "";
+      changed = true;
+    }
+    if(typeof cfg.autoPostDiscord !== "boolean"){
+      cfg.autoPostDiscord = false;
+      changed = true;
+    }
+    if(changed) await setConfig(cfg);
     return cfg;
   }
   cfg = {
@@ -65,8 +77,10 @@ export async function ensureConfig(){
     startDate: "",
     lifespanYears: 85,
     defaultView: "month",
+    discordWebhookUrl: "",
+    autoPostDiscord: false,
     pillars: [
-      { id: crypto.randomUUID(), key: "P",  name: "Purify",       target: "No junk food, sugar, artificial sweeteners, solo entertainment, or cheap dopamine", effectiveDate: "", order: 1 },
+      { id: crypto.randomUUID(), key: "P",  name: "Purify",       target: "Mind + body dopamine reset", effectiveDate: "", order: 1 },
       { id: crypto.randomUUID(), key: "I",  name: "Inner peace",  target: "10 min meditation", effectiveDate: "", order: 2 },
       { id: crypto.randomUUID(), key: "L1", name: "Learn",        target: "10 min spiritual reading", effectiveDate: "", order: 3 },
       { id: crypto.randomUUID(), key: "L2", name: "Labor",        target: "3+ hours focused work", effectiveDate: "", order: 4 },

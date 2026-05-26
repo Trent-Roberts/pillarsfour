@@ -475,3 +475,8 @@ canvas#gridCanvas{
   line-height: 1.45;
   resize: vertical;
 }
+
+
+.goal + .goal{
+  margin-top: 8px;
+}
