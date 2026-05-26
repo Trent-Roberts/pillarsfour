@@ -44,6 +44,98 @@ function escapeHtml(s){
   return String(s || "").replace(/[&<>"']/g, (c)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 
+
+const SIN_ITEMS = [
+  { id: "lust", label: "Lust", detail: "No objectification" },
+  { id: "gluttony", label: "Gluttony", detail: "No overindulging or consuming non-shared dopamine" },
+  { id: "greed", label: "Greed", detail: "No taking from others without love, fair exchange, or peace given" },
+  { id: "sloth", label: "Sloth", detail: "No avoidant rest. Rest must restore, connect, or prepare me for the good I’m called to do" },
+  { id: "wrath", label: "Wrath", detail: "No lashing out except in true defense of life" },
+  { id: "envy", label: "Envy", detail: "No time spent dwelling on jealousy that others have it better. Be happy for them and learn from what they did" },
+  { id: "pride", label: "Pride", detail: "No placing myself above others. Love others and wish them well" },
+];
+
+function defaultSinState(){
+  return SIN_ITEMS.map(s => ({...s, done: true}));
+}
+
+function normalizeSinState(sins){
+  const byId = {};
+  (sins || []).forEach(s => { if(s && s.id) byId[s.id] = s; });
+  return SIN_ITEMS.map(s => ({...s, done: byId[s.id]?.done !== false}));
+}
+
+function normalizeGoals(goals){
+  const arr = Array.isArray(goals) ? goals : [];
+  return [0,1,2].map(i => String(arr[i] || ""));
+}
+
+function pillarExportDetails(task){
+  const key = task.key || "";
+  const name = (task.name || "").toLowerCase();
+  if(key === "P" || name.includes("purify")){
+    return [
+      "Mind: no solo entertainment, scrolling, explicit content, or cheap dopamine",
+      "Body: no artificial sweeteners, sugar, or junk food",
+    ];
+  }
+  if(key === "I" || name.includes("inner")) return ["10 min meditation"];
+  if(key === "L1" || name.includes("learn")) return ["10 min spiritual reading"];
+  if(key === "L2" || name.includes("labor")) return ["3+ hours focused work"];
+  if(key === "A" || name.includes("activity")) return ["40 min workout"];
+  if(key === "R" || name.includes("reinvigorate")) return ["Cold shower"];
+  if(key === "S" || name.includes("sustain")) return ["Half gallon water + calories match cut/bulk goals"];
+  return [task.target || ""].filter(Boolean);
+}
+
+function chunkDiscordMessage(text, maxLen=1900){
+  const lines = String(text || "").split("\n");
+  const chunks = [];
+  let cur = "";
+  for(const line of lines){
+    const add = cur ? `\n${line}` : line;
+    if((cur + add).length > maxLen && cur){
+      chunks.push(cur);
+      cur = line;
+    }else{
+      cur += add;
+    }
+  }
+  if(cur) chunks.push(cur);
+  return chunks;
+}
+
+async function postToDiscordWebhook(webhookUrl, text){
+  const url = String(webhookUrl || "").trim();
+  if(!url) throw new Error("No Discord webhook URL set.");
+  const payloads = chunkDiscordMessage(text).map(content => ({
+    content,
+    allowed_mentions: { parse: [] },
+  }));
+
+  const plugins = (window.Capacitor && window.Capacitor.Plugins) ? window.Capacitor.Plugins : {};
+  const http = plugins.CapacitorHttp;
+
+  for(const payload of payloads){
+    if(http && http.post){
+      const res = await http.post({
+        url,
+        headers: { "Content-Type": "application/json" },
+        data: payload,
+      });
+      const status = Number(res.status || 0);
+      if(status < 200 || status >= 300) throw new Error(`Discord webhook failed (${status}).`);
+    }else{
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if(!res.ok) throw new Error(`Discord webhook failed (${res.status}).`);
+    }
+  }
+}
+
 function renderSetup(app, cfg){
   setActiveNav("");
   app.innerHTML = `
@@ -109,13 +201,33 @@ async function computeStreak(){
   return streak;
 }
 
-function buildClipboardTextFromState(cfg, dateISO, tasks, dayNote){
-  const dn = dayNumber(cfg, dateISO); const lines = ["-------", `🏛️ PILLARS - Day ${dn}`, "-------"];
-  for(const t of (tasks||[])){
-    const mark = t.done ? "✅" : "❌"; let key = t.key || ""; if(key === "L1" || key === "L2") key = "L";
-    const note = (t.note||"").trim(); lines.push(`-# ${key} – ${t.name || ""} → ${t.target || ""}: ${mark}${note ? `  ${note}` : ""}`);
+
+function buildClipboardTextFromState(cfg, dateISO, tasks, dayNote="", sins=null, goals=null){
+  const dn = dayNumber(cfg, dateISO);
+  const lines = ["-------", `🏛️ PILLARS - Day ${dn}`, "-------"];
+
+  for(const t of (tasks || [])){
+    const mark = t.done ? "✅" : "❌";
+    let key = t.key || "";
+    if(key === "L1" || key === "L2") key = "L";
+    lines.push(`-# ${key} – ${t.name || ""} ${mark}`);
+    for(const detail of pillarExportDetails(t)){
+      lines.push(`-# ||${detail}||`);
+    }
   }
-  if((dayNote||"").trim()) lines.push("", (dayNote||"").trim());
+
+  lines.push("-------", "🕯️ SIN CHECK", "-------");
+  for(const s of normalizeSinState(sins)){
+    lines.push(`${s.label} ${s.done ? "✅" : "❌"}`);
+    lines.push(`-# ||${s.detail}||`);
+  }
+
+  lines.push("-------", "🎯 GOALS FOR TOMORROW", "-------");
+  for(const goal of normalizeGoals(goals)){
+    const clean = goal.trim();
+    lines.push(clean ? `- ${clean}` : "- ");
+  }
+
   return lines.join("\n");
 }
 
@@ -127,7 +239,7 @@ async function copyTextToClipboard(txt){
 async function copyClipboardExport(dateISO){
   const cfg = await getConfig(); const entry = await getDay(dateISO);
   if(!entry) return toast("warning","No saved log for that date yet. Save first.");
-  await copyTextToClipboard(buildClipboardTextFromState(cfg, dateISO, entry.tasks || [], entry.dayNote || ""));
+  await copyTextToClipboard(buildClipboardTextFromState(cfg, dateISO, entry.tasks || [], entry.dayNote || "", entry.sins || null, entry.goalsTomorrow || null));
   toast("success","Copied to Clipboard ✅");
 }
 
@@ -244,45 +356,155 @@ async function renderDashboard(app){
   $("#copyToday").addEventListener("click", async ()=> copyClipboardExport(isoDate(new Date())));  let resizeTimer = null; window.addEventListener("resize", ()=>{ clearTimeout(resizeTimer); resizeTimer = setTimeout(()=> renderer.render(), 90); });
 }
 
+
 function renderLog(app, dateISO){
   setActiveNav("log");
-  app.innerHTML = `<section class="card"><div class="control-row"><div><h1 id="logTitle">Log</h1><p class="muted mono" id="logSub">—</p></div><div class="segment"><button class="btn" id="btnToday" type="button">Today</button><button class="btn" id="btnYesterday" type="button">Yesterday</button></div></div><form class="form" id="logForm"><div class="grid2"><div class="field"><label>Date</label><input type="date" id="datePick"><div class="hint">Switching date navigates (it won’t auto-save).</div></div><div class="field"><label>Status override</label><select id="override" class="select-light"><option value="">Auto</option><option value="good">✅ Good (force green)</option><option value="medium">🟡 Medium (force yellow)</option><option value="bad">❌ Bad (force red)</option><option value="connection">🩷 Connection Day (force pink)</option></select><div class="hint">Auto uses your completion rate + overdue rules.</div></div></div><div class="pillars" id="pillars"></div><div class="field"><label>Day note (optional)</label><textarea id="dayNote" rows="3" placeholder="Reflection, lessons, wins, adjustments..."></textarea></div><div class="actions"><button class="btn primary" type="submit">Save and Return</button><button class="btn" id="copyExport" type="button">Copy to Clipboard</button><button class="btn" id="showExportText" type="button">Show Export Text</button><button class="btn danger" id="returnWithoutSaving" type="button">Return Without Saving</button></div><div id="dayExportWrap" class="export-panel" hidden><div class="field"><label>Day export text</label><textarea id="dayExportText" rows="10" readonly></textarea></div></div></form></section>`;
-  const datePick = $("#datePick"), override = $("#override"), pillarsEl = $("#pillars"), dayNote = $("#dayNote");
+  app.innerHTML = `<section class="card"><div class="control-row"><div><h1 id="logTitle">Log</h1><p class="muted mono" id="logSub">—</p></div><div class="segment"><button class="btn" id="btnToday" type="button">Today</button><button class="btn" id="btnYesterday" type="button">Yesterday</button></div></div><form class="form" id="logForm"><div class="grid2"><div class="field"><label>Date</label><input type="date" id="datePick"><div class="hint">Switching date navigates (it won’t auto-save).</div></div><div class="field"><label>Status override</label><select id="override" class="select-light"><option value="">Auto</option><option value="good">✅ Good (force green)</option><option value="medium">🟡 Medium (force yellow)</option><option value="bad">❌ Bad (force red)</option><option value="connection">🩷 Connection Day (force pink)</option></select><div class="hint">Auto uses your completion rate + overdue rules.</div></div></div><h2>Pillars</h2><div class="pillars" id="pillars"></div><h2>Sin Check</h2><div class="pillars" id="sins"></div><div class="field"><label>Day note (private, not included in export)</label><textarea id="dayNote" rows="3" placeholder="Reflection, lessons, wins, adjustments..."></textarea></div><div class="field"><label>Goals for Tomorrow</label><input type="text" class="goal" data-goal="0" placeholder="Goal 1"><input type="text" class="goal" data-goal="1" placeholder="Goal 2"><input type="text" class="goal" data-goal="2" placeholder="Goal 3"></div><div class="actions"><button class="btn primary" type="submit">Save and Return</button><button class="btn" id="copyExport" type="button">Copy to Clipboard</button><button class="btn" id="showExportText" type="button">Show Export Text</button><button class="btn" id="postDiscord" type="button">Post to Discord</button><button class="btn danger" id="returnWithoutSaving" type="button">Return Without Saving</button></div><div id="dayExportWrap" class="export-panel" hidden><div class="field"><label>Day export text</label><textarea id="dayExportText" rows="16" readonly></textarea></div></div></form></section>`;
+
+  const datePick = $("#datePick"), override = $("#override"), pillarsEl = $("#pillars"), sinsEl = $("#sins"), dayNote = $("#dayNote");
   async function load(){
     const cfg = await getConfig(); const d = dateISO || isoDate(new Date()); datePick.value = d;
-    $("#logTitle").textContent = `Log Day ${dayNumber(cfg, d)}`; $("#logSub").textContent = `${d} • ${new Date(`${d}T00:00:00`).toLocaleDateString(undefined, {weekday:"long"})}`;
-    const existing = await getDay(d); let tasks = existing?.tasks || null; override.value = existing?.override || ""; dayNote.value = existing?.dayNote || "";
-    if(!tasks){ tasks = pillarsEffectiveForDate(cfg, d).map(p => ({ pillarId: p.id, key: p.key, name: p.name, target: p.target, done: true, note: "" })); }
-    pillarsEl.innerHTML = tasks.map((t, idx)=> `<div class="pillar"><div class="pillar-top"><label class="check"><input type="checkbox" data-idx="${idx}" class="done" ${t.done ? "checked" : ""}><span class="checkmark"></span></label><div class="pillar-text"><div class="pillar-title"><span class="pillkey mono">${escapeHtml(t.key || "")}</span><span class="pillname">${escapeHtml(t.name || "")}</span></div><div class="muted small">${escapeHtml(t.target || "")}</div></div></div><div class="field"><input type="text" class="note" data-idx="${idx}" value="${escapeHtml(t.note || "")}" placeholder="Optional note (e.g., Push day, Business, etc.)"></div></div>`).join("");
+    $("#logTitle").textContent = `Log Day ${dayNumber(cfg, d)}`;
+    $("#logSub").textContent = `${d} • ${new Date(`${d}T00:00:00`).toLocaleDateString(undefined, {weekday:"long"})}`;
+    const existing = await getDay(d);
+    let tasks = existing?.tasks || null;
+    override.value = existing?.override || "";
+    dayNote.value = existing?.dayNote || "";
+    if(!tasks){
+      tasks = pillarsEffectiveForDate(cfg, d).map(p => ({ pillarId: p.id, key: p.key, name: p.name, target: p.target, done: true, note: "" }));
+    }
     app.__tasks = tasks;
+    app.__sins = normalizeSinState(existing?.sins || null);
+    app.__goals = normalizeGoals(existing?.goalsTomorrow || null);
+
+    pillarsEl.innerHTML = tasks.map((t, idx)=> `<div class="pillar"><div class="pillar-top"><label class="check"><input type="checkbox" data-idx="${idx}" class="done" ${t.done ? "checked" : ""}><span class="checkmark"></span></label><div class="pillar-text"><div class="pillar-title"><span class="pillkey mono">${escapeHtml((t.key === "L1" || t.key === "L2") ? "L" : (t.key || ""))}</span><span class="pillname">${escapeHtml(t.name || "")}</span></div><div class="muted small">${pillarExportDetails(t).map(escapeHtml).join(" • ")}</div></div></div></div>`).join("");
+
+    sinsEl.innerHTML = app.__sins.map((s, idx)=> `<div class="pillar"><div class="pillar-top"><label class="check"><input type="checkbox" data-sin="${idx}" class="sin-done" ${s.done ? "checked" : ""}><span class="checkmark"></span></label><div class="pillar-text"><div class="pillar-title"><span class="pillname">${escapeHtml(s.label)}</span></div><div class="muted small">${escapeHtml(s.detail)}</div></div></div></div>`).join("");
+
+    document.querySelectorAll(".goal").forEach(inp => { inp.value = app.__goals[Number(inp.dataset.goal)] || ""; });
   }
+
+  function currentExportText(cfg){
+    return buildClipboardTextFromState(cfg, datePick.value || isoDate(new Date()), app.__tasks || [], dayNote.value || "", app.__sins || defaultSinState(), app.__goals || ["","",""]);
+  }
+
+  async function postCurrentToDiscord(){
+    const cfg = await getConfig();
+    if(!cfg.discordWebhookUrl){
+      toast("warning","Set a Discord webhook URL in Settings first.");
+      return false;
+    }
+    await postToDiscordWebhook(cfg.discordWebhookUrl, currentExportText(cfg));
+    toast("success","Posted to Discord ✅");
+    return true;
+  }
+
   datePick.addEventListener("change", ()=> { if(datePick.value) window.location.hash = `#/log?date=${encodeURIComponent(datePick.value)}`; });
   $("#btnToday").addEventListener("click", ()=> window.location.hash = `#/log?date=${encodeURIComponent(isoDate(new Date()))}`);
   $("#btnYesterday").addEventListener("click", ()=> window.location.hash = `#/log?date=${encodeURIComponent(isoDate(addDays(new Date(), -1)))}`);
   $("#returnWithoutSaving").addEventListener("click", ()=> window.location.hash = "#/dashboard");
-  $("#logForm").addEventListener("input", (ev)=>{ const done = ev.target.closest(".done"), note = ev.target.closest(".note"); if(done) app.__tasks[Number(done.dataset.idx)].done = done.checked; else if(note) app.__tasks[Number(note.dataset.idx)].note = note.value; });
-  $("#logForm").addEventListener("submit", async (ev)=>{ ev.preventDefault(); const tasks = app.__tasks || []; const total = tasks.length, done = tasks.reduce((a,t)=> a + (t.done ? 1 : 0), 0); await upsertDay({ date: datePick.value, tasks, total, done, ratio: total ? (done/total) : 0, override: override.value || "", dayNote: dayNote.value.trim() }); toast("success","Saved ✅"); window.location.hash = "#/dashboard"; });
-  $("#copyExport").addEventListener("click", async ()=>{ const cfg = await getConfig(); await copyTextToClipboard(buildClipboardTextFromState(cfg, datePick.value || isoDate(new Date()), app.__tasks || [], dayNote.value || "")); toast("success","Copied to Clipboard ✅"); });
+
+  $("#logForm").addEventListener("input", (ev)=>{
+    const done = ev.target.closest(".done");
+    const sinDone = ev.target.closest(".sin-done");
+    const goal = ev.target.closest(".goal");
+    if(done) app.__tasks[Number(done.dataset.idx)].done = done.checked;
+    else if(sinDone) app.__sins[Number(sinDone.dataset.sin)].done = sinDone.checked;
+    else if(goal) app.__goals[Number(goal.dataset.goal)] = goal.value;
+  });
+
+  $("#logForm").addEventListener("submit", async (ev)=>{
+    ev.preventDefault();
+    const cfg = await getConfig();
+    const tasks = app.__tasks || [];
+    const total = tasks.length, done = tasks.reduce((a,t)=> a + (t.done ? 1 : 0), 0);
+    const entry = {
+      date: datePick.value,
+      tasks,
+      total,
+      done,
+      ratio: total ? (done/total) : 0,
+      override: override.value || "",
+      dayNote: dayNote.value.trim(),
+      sins: normalizeSinState(app.__sins),
+      goalsTomorrow: normalizeGoals(app.__goals),
+    };
+    await upsertDay(entry);
+    if(cfg.autoPostDiscord && cfg.discordWebhookUrl){
+      try{ await postToDiscordWebhook(cfg.discordWebhookUrl, buildClipboardTextFromState(cfg, entry.date, entry.tasks, entry.dayNote, entry.sins, entry.goalsTomorrow)); toast("success","Saved and posted to Discord ✅"); }
+      catch(err){ console.error(err); toast("error","Saved, but Discord post failed."); }
+    }else{
+      toast("success","Saved ✅");
+    }
+    window.location.hash = "#/dashboard";
+  });
+
+  $("#copyExport").addEventListener("click", async ()=>{
+    const cfg = await getConfig();
+    await copyTextToClipboard(currentExportText(cfg));
+    toast("success","Copied to Clipboard ✅");
+  });
+
+  $("#showExportText").addEventListener("click", async ()=>{
+    const cfg = await getConfig();
+    $("#dayExportText").value = currentExportText(cfg);
+    $("#dayExportWrap").hidden = false;
+  });
+
+  $("#postDiscord").addEventListener("click", async ()=>{
+    try{ await postCurrentToDiscord(); }
+    catch(err){ console.error(err); toast("error","Discord post failed. Check webhook URL/internet."); }
+  });
+
   load();
 }
 
+
 function renderSettings(app){
   setActiveNav("settings");
-  app.innerHTML = `<section class="card"><h1>Settings</h1><p class="muted">Customize pillars. New pillars apply from their effective date onward — old days keep original totals (e.g., 6/7).</p><form class="form" id="settingsForm"><div class="grid2"><div class="field"><label>Display name</label><input id="sName" type="text" placeholder="Optional"></div><div class="field"><label>Lifespan (years)</label><input id="sLife" type="number" min="50" max="120"></div></div><div class="grid2"><div class="field"><label>Default selected view</label><select id="sDefaultView" class="select-light"><option value="week">Week</option><option value="month">Month</option><option value="year">Year</option><option value="decade">Decade</option><option value="lifetime">Lifetime</option></select></div><div class="field"><label>Backup / Restore</label><div class="backup-box"><button class="btn" type="button" id="showBackupText">Show Backup Text</button><label class="btn" for="restoreBackup">Restore Backup</label><input class="hidden-input" type="file" id="restoreBackup" accept="application/json"></div><div id="backupTextWrap" class="export-panel" hidden><div class="field"><label>Backup JSON</label><textarea id="backupText" rows="14" readonly></textarea></div></div></div></div><h2 style="margin-top:6px">Pillars</h2><p class="muted small">Drag to reorder. “Effective date” controls when a pillar starts counting toward totals.</p><div id="pillarsList" class="pillars"></div><div class="actions"><button class="btn" type="button" id="addPillar">Add pillar</button><button class="btn primary" type="submit">Save settings</button></div></form></section>`;
+  app.innerHTML = `<section class="card"><h1>Settings</h1><p class="muted">Customize pillars. New pillars apply from their effective date onward — old days keep original totals (e.g., 6/7).</p><form class="form" id="settingsForm"><div class="grid2"><div class="field"><label>Display name</label><input id="sName" type="text" placeholder="Optional"></div><div class="field"><label>Lifespan (years)</label><input id="sLife" type="number" min="50" max="120"></div></div><div class="grid2"><div class="field"><label>Default selected view</label><select id="sDefaultView" class="select-light"><option value="week">Week</option><option value="month">Month</option><option value="year">Year</option><option value="decade">Decade</option><option value="lifetime">Lifetime</option></select></div><div class="field"><label>Backup / Restore</label><div class="backup-box"><button class="btn" type="button" id="showBackupText">Show Backup Text</button><label class="btn" for="restoreBackup">Restore Backup</label><input class="hidden-input" type="file" id="restoreBackup" accept="application/json"></div><div id="backupTextWrap" class="export-panel" hidden><div class="field"><label>Backup JSON</label><textarea id="backupText" rows="14" readonly></textarea></div></div></div></div><div class="card" style="box-shadow:none;margin:4px 0 0;padding:12px"><h2>Discord Webhook</h2><p class="muted small">Paste a Discord channel webhook URL. It is stored only on this device. Auto post sends your saved daily export when you press Save and Return.</p><div class="field"><label>Webhook URL</label><input id="sDiscordWebhook" type="password" placeholder="https://discord.com/api/webhooks/..."></div><label class="check" style="gap:10px"><input type="checkbox" id="sAutoPostDiscord"><span class="checkmark"></span><span>Auto post to Discord after saving a daily log</span></label><div class="actions"><button class="btn" type="button" id="testDiscordWebhook">Send Test Message</button></div></div><h2 style="margin-top:6px">Pillars</h2><p class="muted small">Drag to reorder. “Effective date” controls when a pillar starts counting toward totals.</p><div id="pillarsList" class="pillars"></div><div class="actions"><button class="btn" type="button" id="addPillar">Add pillar</button><button class="btn primary" type="submit">Save settings</button></div></form></section>`;
   const list = $("#pillarsList"); let cfgLocal = null;
+
   function renderList(){
     const pills = (cfgLocal.pillars||[]).slice().sort((a,b)=> (a.order||0)-(b.order||0));
     list.innerHTML = pills.map((p)=> `<div class="pillar draggable" draggable="true" data-id="${p.id}"><div class="pillar-row"><div class="drag-handle" aria-hidden="true"></div><div class="grow"><div class="grid3"><div class="field"><label>Key</label><input type="text" data-field="key" data-id="${p.id}" value="${escapeHtml(p.key||"")}"></div><div class="field"><label>Name</label><input type="text" data-field="name" data-id="${p.id}" value="${escapeHtml(p.name||"")}"></div><div class="field"><label>Target</label><input type="text" data-field="target" data-id="${p.id}" value="${escapeHtml(p.target||"")}"></div></div><div class="grid2" style="margin-top:10px"><div class="field"><label>Effective date</label><input type="date" data-field="effectiveDate" data-id="${p.id}" value="${escapeHtml(p.effectiveDate||cfgLocal.startDate||"")}"><div class="hint">Only dates on/after this count this pillar.</div></div><div class="field"><label>Remove</label><button class="btn danger" type="button" data-remove="${p.id}">Remove</button></div></div></div></div></div>`).join("");
     let dragId = null;
     list.querySelectorAll(".draggable").forEach(el=>{ el.addEventListener("dragstart", (ev)=>{ dragId = el.dataset.id; ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", dragId); }); el.addEventListener("dragover", (ev)=>{ ev.preventDefault(); ev.dataTransfer.dropEffect = "move"; }); el.addEventListener("drop", (ev)=>{ ev.preventDefault(); const targetId = el.dataset.id; if(!dragId || dragId === targetId) return; const pills = (cfgLocal.pillars||[]).slice().sort((a,b)=> (a.order||0)-(b.order||0)); const from = pills.findIndex(p=>p.id===dragId), to = pills.findIndex(p=>p.id===targetId); const [moved] = pills.splice(from,1); pills.splice(to,0,moved); pills.forEach((p,i)=> p.order=i+1); cfgLocal.pillars = pills; renderList(); dragId = null; }); });
   }
+
   list.addEventListener("input", (ev)=>{ const inp = ev.target.closest("input"); if(!inp) return; const p = cfgLocal.pillars.find(x=>x.id===inp.dataset.id); if(p) p[inp.dataset.field] = inp.value; });
   list.addEventListener("click", (ev)=>{ const rem = ev.target.closest("button")?.dataset.remove; if(rem){ cfgLocal.pillars = cfgLocal.pillars.filter(p=>p.id!==rem); cfgLocal.pillars.sort((a,b)=> (a.order||0)-(b.order||0)).forEach((p,i)=> p.order=i+1); renderList(); } });
   $("#addPillar").addEventListener("click", ()=>{ cfgLocal.pillars.push({ id: crypto.randomUUID(), key:"", name:"", target:"", effectiveDate: isoDate(new Date()), order: (cfgLocal.pillars?.length || 0) + 1 }); renderList(); });
   $("#showBackupText").addEventListener("click", async ()=>{ $("#backupText").value = JSON.stringify(await exportAllData(), null, 2); $("#backupTextWrap").hidden = false; });
   $("#restoreBackup").addEventListener("change", async (ev)=>{ const file = ev.target.files?.[0]; if(!file) return; try{ await restoreAllData(JSON.parse(await file.text())); toast("success","Backup restored ✅"); window.location.reload(); } catch { toast("error","Backup restore failed."); } });
-  $("#settingsForm").addEventListener("submit", async (ev)=>{ ev.preventDefault(); cfgLocal.displayName = $("#sName").value.trim(); cfgLocal.lifespanYears = Number($("#sLife").value || 85); cfgLocal.defaultView = $("#sDefaultView").value || "month"; await setConfig(cfgLocal); toast("success","Settings saved ✅"); });
-  (async ()=>{ cfgLocal = JSON.parse(JSON.stringify(await getConfig())); $("#sName").value = cfgLocal.displayName || ""; $("#sLife").value = cfgLocal.lifespanYears || 85; $("#sDefaultView").value = cfgLocal.defaultView || "month"; renderList(); })();
+
+  $("#testDiscordWebhook").addEventListener("click", async ()=>{
+    const url = $("#sDiscordWebhook").value.trim();
+    if(!url) return toast("warning","Paste a Discord webhook URL first.");
+    try{ await postToDiscordWebhook(url, "🏛️ Life Grid test message ✅"); toast("success","Discord test sent ✅"); }
+    catch(err){ console.error(err); toast("error","Discord test failed. Check URL/internet."); }
+  });
+
+  $("#settingsForm").addEventListener("submit", async (ev)=>{
+    ev.preventDefault();
+    cfgLocal.displayName = $("#sName").value.trim();
+    cfgLocal.lifespanYears = Number($("#sLife").value || 85);
+    cfgLocal.defaultView = $("#sDefaultView").value || "month";
+    cfgLocal.discordWebhookUrl = $("#sDiscordWebhook").value.trim();
+    cfgLocal.autoPostDiscord = $("#sAutoPostDiscord").checked;
+    await setConfig(cfgLocal);
+    toast("success","Settings saved ✅");
+  });
+
+  (async ()=>{
+    cfgLocal = JSON.parse(JSON.stringify(await getConfig()));
+    $("#sName").value = cfgLocal.displayName || "";
+    $("#sLife").value = cfgLocal.lifespanYears || 85;
+    $("#sDefaultView").value = cfgLocal.defaultView || "month";
+    $("#sDiscordWebhook").value = cfgLocal.discordWebhookUrl || "";
+    $("#sAutoPostDiscord").checked = !!cfgLocal.autoPostDiscord;
+    renderList();
+  })();
 }
 
 async function render(){
