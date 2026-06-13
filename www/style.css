@@ -480,3 +480,9 @@ canvas#gridCanvas{
 .goal + .goal{
   margin-top: 8px;
 }
+
+
+.pillars textarea[data-field="target"]{
+  min-height: 64px;
+  line-height: 1.35;
+}

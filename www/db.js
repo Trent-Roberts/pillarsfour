@@ -40,6 +40,37 @@ export async function setMeta(key, value){
   });
 }
 
+
+function standardPillarTarget(p){
+  const key = p?.key || "";
+  const name = String(p?.name || "").toLowerCase();
+  if(key === "P" || name.includes("purify")){
+    return "Mind: no solo entertainment, scrolling, explicit content, or cheap dopamine | Body: no artificial sweeteners, sugar, or junk food";
+  }
+  if(key === "I" || name.includes("inner")) return "10 min meditation";
+  if(key === "L1" || name.includes("learn")) return "10 min spiritual reading";
+  if(key === "L2" || name.includes("labor")) return "3+ hours focused work";
+  if(key === "A" || name.includes("activity")) return "40 min workout";
+  if(key === "R" || name.includes("reinvigorate")) return "Cold shower";
+  if(key === "S" || name.includes("sustain")) return "Half gallon water + calories match cut/bulk goals";
+  return p?.target || "";
+}
+
+function syncDefaultPillarTargets(cfg){
+  if(!cfg || !Array.isArray(cfg.pillars)) return false;
+  let changed = false;
+  cfg.pillars = cfg.pillars.map(p => {
+    const nextTarget = standardPillarTarget(p);
+    if(nextTarget && p.target !== nextTarget){
+      changed = true;
+      return {...p, target: nextTarget};
+    }
+    return p;
+  });
+  return changed;
+}
+
+
 export async function getConfig(){
   return await getMeta("config");
 }
@@ -68,6 +99,7 @@ export async function ensureConfig(){
       cfg.autoPostDiscord = false;
       changed = true;
     }
+    if(syncDefaultPillarTargets(cfg)) changed = true;
     if(changed) await setConfig(cfg);
     return cfg;
   }
@@ -80,7 +112,7 @@ export async function ensureConfig(){
     discordWebhookUrl: "",
     autoPostDiscord: false,
     pillars: [
-      { id: crypto.randomUUID(), key: "P",  name: "Purify",       target: "Mind + body dopamine reset", effectiveDate: "", order: 1 },
+      { id: crypto.randomUUID(), key: "P",  name: "Purify",       target: "Mind: no solo entertainment, scrolling, explicit content, or cheap dopamine | Body: no artificial sweeteners, sugar, or junk food", effectiveDate: "", order: 1 },
       { id: crypto.randomUUID(), key: "I",  name: "Inner peace",  target: "10 min meditation", effectiveDate: "", order: 2 },
       { id: crypto.randomUUID(), key: "L1", name: "Learn",        target: "10 min spiritual reading", effectiveDate: "", order: 3 },
       { id: crypto.randomUUID(), key: "L2", name: "Labor",        target: "3+ hours focused work", effectiveDate: "", order: 4 },
@@ -89,6 +121,7 @@ export async function ensureConfig(){
       { id: crypto.randomUUID(), key: "S",  name: "Sustain",      target: "Half gallon water + calories match cut/bulk goals", effectiveDate: "", order: 7 },
     ]
   };
+  syncDefaultPillarTargets(cfg);
   await setConfig(cfg);
   return cfg;
 }

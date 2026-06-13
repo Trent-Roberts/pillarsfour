@@ -111,10 +111,16 @@ Latest updates:
 
 Android-native patch:
 - Uses Capacitor App plugin for back button handling
-- Uses Filesystem + Share for PNG and backup export on Android.
+- Uses Filesystem + Share for PNG and backup export on Android
 
 
 Discord webhook update:
 - New PILLARS/SIN CHECK/GOALS export format
 - Settings include webhook URL and auto-post checkbox
 - Log page has manual Post to Discord button
+
+
+Pillar description update:
+- Default pillar descriptions now match the exported output.
+- Existing standard pillars migrate to the long canonical descriptions.
+- Settings target fields use textareas so long descriptions are readable.
